@@ -229,6 +229,66 @@ test("conexão por QR respeita permissão, tenant e limite do plano", async () =
     0,
   );
 });
+test("remover WhatsApp preserva histórico, encerra fila e libera novo QR", async () => {
+  const registered = await call("POST", "/api/auth/register", {
+    name: "Gestor Reconexão", company: "Empresa Reconexão",
+    email: `reconnect-${randomUUID()}@example.test`, password: passwords,
+  });
+  assert.equal(registered.statusCode, 201, registered.body);
+  const cookie = session(registered);
+  const me = (await call("GET", "/api/auth/me", undefined, cookie)).json();
+  const tenant = me.user.tenantId;
+  const created = await call("POST", "/api/whatsapp/connections", undefined, cookie);
+  assert.equal(created.statusCode, 201, created.body);
+  const connection = created.json().id;
+  const incoming = await ingestIncomingMessage(tenant, connection, {
+    externalId: "history-before-removal", remoteJid: "5511991112233@s.whatsapp.net",
+    fromMe: false, pushName: "Cliente", kind: "text", body: "Preserve esta conversa", sentAt: new Date(),
+  });
+  assert.ok(incoming?.conversationId);
+  await tx(tenant, async db => {
+    await db.query("INSERT INTO whatsapp_auth_keys(tenant_id,connection_id,category,key_id,encrypted_payload) VALUES($1,$2,'creds','test','test')", [tenant, connection]);
+    for (const status of ["queued", "sending"]) {
+      await db.query("INSERT INTO messages(id,tenant_id,conversation_id,whatsapp_connection_id,external_id,direction,kind,body,sent_at,status) VALUES($1,$2,$3,$4,$5,'outbound','text','Pendente',now(),$5)", [randomUUID(), tenant, incoming.conversationId, connection, status]);
+    }
+  });
+  const { BaileysGateway } = await import("../src/whatsapp-manager.js");
+  let pairingStarted = false;
+  class PairingProbe extends BaileysGateway {
+    override async start() { pairingStarted = true; }
+  }
+  await tx(tenant, db => db.query("UPDATE whatsapp_connections SET status='attention',last_error_code='401' WHERE id=$1", [connection]));
+  await new PairingProbe().reconnect(tenant, connection);
+  assert.equal(pairingStarted, true);
+  await tx(tenant, async db => {
+    assert.equal((await db.query("SELECT 1 FROM whatsapp_auth_keys WHERE connection_id=$1", [connection])).rowCount, 0);
+    // A new pairing may have saved keys before the user removes the device.
+    await db.query("INSERT INTO whatsapp_auth_keys(tenant_id,connection_id,category,key_id,encrypted_payload) VALUES($1,$2,'creds','test','test')", [tenant, connection]);
+  });
+  assert.equal((await call("DELETE", `/api/whatsapp/connections/${connection}`, undefined, b)).statusCode, 404);
+  const removed = await call("DELETE", `/api/whatsapp/connections/${connection}`, undefined, cookie);
+  assert.equal(removed.statusCode, 200, removed.body);
+  await tx(tenant, async db => {
+    const conversation = (await db.query("SELECT tenant_id,whatsapp_connection_id FROM conversations WHERE id=$1", [incoming.conversationId])).rows[0];
+    assert.equal(conversation.tenant_id, tenant);
+    assert.equal(conversation.whatsapp_connection_id, null);
+    const history = (await db.query("SELECT external_id,status,whatsapp_connection_id FROM messages WHERE conversation_id=$1", [incoming.conversationId])).rows;
+    assert.equal(history.length, 3);
+    assert.ok(history.every(row => row.whatsapp_connection_id === null));
+    assert.equal(history.find(row => row.external_id === "queued").status, "failed");
+    assert.equal(history.find(row => row.external_id === "sending").status, "uncertain");
+    assert.equal((await db.query("SELECT 1 FROM whatsapp_auth_keys WHERE connection_id=$1", [connection])).rowCount, 0);
+  });
+  const history = await call("GET", `/api/inbox/${incoming.conversationId}/messages`, undefined, cookie);
+  assert.equal(history.statusCode, 200, history.body);
+  const send = await call("POST", `/api/inbox/${incoming.conversationId}/messages`, { requestId: randomUUID(), body: "Não enfileirar" }, cookie);
+  assert.equal(send.statusCode, 409);
+  assert.equal(send.json().code, "WHATSAPP_CONNECTION_REMOVED");
+  const next = await call("POST", "/api/whatsapp/connections", undefined, cookie);
+  assert.equal(next.statusCode, 201, next.body);
+  assert.notEqual(next.json().id, connection);
+});
+
 test("mensagens recebidas criam inbox idempotente e respeitam tenant", async () => {
   const connectionId = randomUUID();
   await tx(tenantA, (db) =>

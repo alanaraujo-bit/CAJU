@@ -16,8 +16,12 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { api, roleNames } from "./api";
-import { Field, Form, Logo, field, Loading, ErrorMessage } from "./ui";
+import { Field, Form, Logo, field, Loading, ErrorMessage, Retry } from "./ui";
 export function Auth() {
+  const location = useLocation();
+  return <AuthScreen key={location.pathname + location.search} />;
+}
+function AuthScreen() {
   const { pathname } = useLocation(),
     navigate = useNavigate(),
     queryClient = useQueryClient(),
@@ -42,8 +46,12 @@ export function Auth() {
     queryKey: ["capabilities"],
     queryFn: () => api<{ passwordRecovery: boolean }>("/auth/capabilities"),
     enabled: forgot,
+    retry: false,
   });
-  const title = signup
+  const incompleteLink = (reset || invite) && !token;
+  const title = incompleteLink
+    ? "Vamos encontrar o caminho certo."
+    : signup
     ? "Seu próximo capítulo começa aqui."
     : forgot
       ? "Vamos recuperar seu acesso."
@@ -52,7 +60,9 @@ export function Auth() {
         : invite
           ? "Sua equipe espera por você."
           : "Bom ter você por aqui.";
-  const subtitle = signup
+  const subtitle = incompleteLink
+    ? "O endereço aberto não contém todas as informações necessárias."
+    : signup
     ? "Crie o espaço da sua empresa. Depois, configure tudo no seu ritmo."
     : forgot
       ? "Informe o e-mail que você usa para entrar no Caju."
@@ -139,7 +149,20 @@ export function Auth() {
         <section className="auth-form">
           <h1>{title}</h1>
           <p>{subtitle}</p>
-          {invite && invitation.isPending ? (
+          {incompleteLink ? (
+            <div className="notice warning" role="alert">
+              <div>
+                <strong>Este link está incompleto.</strong>
+                <p>{invite ? "Abra o link completo enviado pela sua equipe." : "Solicite um novo link para redefinir sua senha com segurança."}</p>
+                {reset && <Link to="/recuperar">Solicitar novo link</Link>}
+                {invite && <Link to="/entrar">Voltar para entrar</Link>}
+              </div>
+            </div>
+          ) : forgot && capabilities.isPending ? (
+            <Loading />
+          ) : forgot && capabilities.error ? (
+            <Retry error={capabilities.error} retry={() => void capabilities.refetch()} />
+          ) : invite && invitation.isPending ? (
             <Loading />
           ) : invite && invitation.error ? (
             <ErrorMessage error={invitation.error} />

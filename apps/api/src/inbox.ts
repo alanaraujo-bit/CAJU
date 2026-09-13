@@ -324,6 +324,12 @@ export async function inboxRoutes(
             );
           return { id: existing.id, status: existing.status };
         }
+        if (!body.internal && !conversation.whatsapp_connection_id)
+          throw new AppError(
+            409,
+            "O WhatsApp deste atendimento foi removido. Conecte o número novamente e use um novo atendimento. O histórico continua disponível.",
+            "WHATSAPP_CONNECTION_REMOVED",
+          );
         if (
           !body.internal &&
           conversation.assignee_id !== req.user.membershipId

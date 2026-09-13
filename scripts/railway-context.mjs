@@ -7,7 +7,7 @@ export function railway(args, input) {
   if (args.some((v) => /[`$\r\n]/.test(v)))
     throw new Error("Invalid CLI argument");
   const command =
-    "railway " + args.map((v) => "'" + v.replaceAll("'", "''") + "'").join(" ");
+    (process.platform === "win32" ? "railway.cmd " : "railway ") + args.map((v) => "'" + v.replaceAll("'", "''") + "'").join(" ");
   return execFileSync("powershell.exe", ["-NoProfile", "-Command", command], {
     encoding: "utf8",
     input,

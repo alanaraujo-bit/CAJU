@@ -470,6 +470,17 @@ export class BaileysGateway implements WhatsAppGateway {
 
   async reconnect(tenantId: string, connectionId: string) {
     await this.stopSocket(connectionId);
+    await transaction(tenantId, async (db) => {
+      const { rows: [stored] } = await db.query(
+        "SELECT last_error_code FROM whatsapp_connections WHERE id=$1 FOR UPDATE",
+        [connectionId],
+      );
+      if (stored && [DisconnectReason.loggedOut, DisconnectReason.badSession, DisconnectReason.forbidden].includes(Number(stored.last_error_code))) {
+        // Revoked credentials cannot produce a new pairing QR. Only discard
+        // authentication material; conversations keep the same connection ID.
+        await db.query("DELETE FROM whatsapp_auth_keys WHERE connection_id=$1", [connectionId]);
+      }
+    });
     await this.start(tenantId, connectionId);
   }
 

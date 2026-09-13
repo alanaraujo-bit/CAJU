@@ -125,6 +125,13 @@ export async function whatsappRoutes(
       if (!exists) throw new AppError(404, "Conexão não encontrada.");
       await gateway.remove(req.user.tenantId, id);
       await transaction(req.user.tenantId, async (db) => {
+        // A removed device can no longer dispatch its queue. An in-flight send
+        // remains uncertain because the recipient might already have received it.
+        await db.query(
+          `UPDATE messages SET status=CASE WHEN status='queued' THEN 'failed' ELSE 'uncertain' END,
+           status_updated_at=now() WHERE whatsapp_connection_id=$1 AND status IN ('queued','sending')`,
+          [id],
+        );
         await db.query("DELETE FROM whatsapp_connections WHERE id=$1", [id]);
         await audit(
           db,
